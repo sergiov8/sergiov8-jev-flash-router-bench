@@ -1,29 +1,46 @@
 # Classifier + Gemini Flash router benchmark
 
-A prototype comparing strategies for routing coding-agent tasks between a fast model budget and a deep-reasoning model tier:
+A benchmark evaluating strategies for routing coding-agent tasks across the Gemini lineup (`gemini-3.5-flash-lite`, `gemini-3.8-flash` thinking levels and `gemini-3.1-pro-preview`) using [TypeSafe's Jev](https://typesafe.ai) decision model.
 
-- **Always Flash (300-token fast worker)** sends every question to `gemini-3.8-flash` with `maxOutputTokens=300`.
-- **Always Flash (4096-token full thinking)** sends every question to `gemini-3.8-flash` with `maxOutputTokens=4096`.
-- **Always Pro** sends every question to `gemini-3.1-pro-preview` with `maxOutputTokens=4096`.
-- **Router (heuristic)** uses a frozen local keyword and length classifier tuned on the initial 16 dev questions.
-- **Router (Jev)** uses [TypeSafe's Jev](https://typesafe.ai) model to decide per question via one atomic `Noul` question.
+## Standalone configurations and routers evaluated
 
-## Dataset structure (50 questions across 7 coding-agent buckets)
+### Standalone arms
+1. **Always Flash-Lite (`gemini-3.5-flash-lite`)** runs every task with `0` thinking tokens.
+2. **Always Flash-3.8 (`300-tok output cap`)** runs `gemini-3.8-flash` with `maxOutputTokens=300` and default `HIGH` thinking.
+3. **Always Flash-3.8 (`thinkingLevel=LOW`)** runs `gemini-3.8-flash` with `thinkingConfig={"thinkingLevel": "LOW"}`.
+4. **Always Flash-3.8 (`4096-tok HIGH`)** runs `gemini-3.8-flash` with `maxOutputTokens=4096` and default `HIGH` thinking.
+5. **Always Pro-3.1 (`4096-tok`)** runs `gemini-3.1-pro-preview` with `maxOutputTokens=4096`.
 
-The benchmark evaluates 50 coding-agent tasks split into two sets:
+### Router arms
+- **Router Heuristic (`Flash-Lite -> Flash-3.8 HIGH`)** uses a frozen local keyword and length heuristic tuned on the 16 development questions.
+- **Router Jev (`Flash-Lite -> Flash-3.8 HIGH`)** uses one atomic `Noul` question on Jev to route simple tasks to `gemini-3.5-flash-lite` and complex tasks to `gemini-3.8-flash`.
+- **Router Jev (`Flash-Lite -> Flash-3.8 LOW`)** routes simple tasks to `gemini-3.5-flash-lite` and complex tasks to `gemini-3.8-flash` with `thinkingLevel=LOW`.
+- **Router Jev (`3.8 LOW -> 3.8 HIGH`)** routes between `thinkingLevel=LOW` and `thinkingLevel=HIGH` on `gemini-3.8-flash`.
+- **Router Jev (`3.8 300-cap -> 3.8 HIGH` and `3.8 300-cap -> Pro-3.1`)** tests output-cap routing against model-tier and thinking-level routing.
 
-1. **Dev split (`n=16`, `S1-S8` and `C1-C8`):** The original 16 questions used to build the local keyword heuristic.
-2. **Held-out test split (`n=34`, `S9-S25` and `C9-C25`):** 34 unseen questions across seven task buckets (`lookup_extract`, `schema_format`, `classification`, `single_hop_code`, `simulation_trace`, `math_logic_chain` and `subtle_bug_edge`).
+## 50-question results summary
 
-Every question is graded deterministically by a Python `check()` function in `questions_simple.py` and `questions_complex.py`.
+| Strategy | Accuracy | Thinking Tokens | True Billed Cost | Billed Cost / Success | Avg Latency |
+|---|---|---|---|---|---|
+| Always Flash-Lite (`3.5-flash-lite`) | 44/50, 88.0% | 0 | $0.00120 | $0.00003 | 0.61s |
+| Always Flash-3.8 (`300-tok output cap`) | 43/50, 86.0% | 10,905 | $0.04404 | $0.00102 | 3.57s |
+| Always Flash-3.8 (`thinkingLevel=LOW`) | 50/50, 100.0% | 6,187 | $0.02632 | $0.00053 | 3.55s |
+| Always Flash-3.8 (`4096-tok HIGH`) | 50/50, 100.0% | 13,930 | $0.05535 | $0.00111 | 3.08s |
+| Always Pro-3.1 (`4096-tok`) | 48/50, 96.0% | 25,854 | $0.31970 | $0.00666 | 7.94s |
+| Router Heuristic (`Flash-Lite -> 3.8 HIGH`) | 48/50, 96.0% | 8,550 | $0.03440 | $0.00072 | 1.88s |
+| Router Jev (`Flash-Lite -> 3.8 HIGH`) | 50/50, 100.0% | 9,078 | $0.03683 | $0.00074 | 1.67s |
+| Router Jev (`Flash-Lite -> 3.8 LOW`) | 50/50, 100.0% | 5,235 | $0.02241 | $0.00045 | 1.90s |
+| Router Jev (`3.8 LOW -> 3.8 HIGH`) | 50/50, 100.0% | 10,030 | $0.04160 | $0.00083 | 3.52s |
+| Router Jev (`3.8 300-cap -> 3.8 HIGH`) | 50/50, 100.0% | 14,090 | $0.05683 | $0.00114 | 3.51s |
+| Router Jev (`3.8 300-cap -> Pro-3.1`) | 50/50, 100.0% | 23,696 | $0.25012 | $0.00500 | 6.42s |
 
-## Result files
+## Reproducing the summary tables offline (no API keys required)
 
-- `router_bench_results_jev_naive_choice.json` is the first 16-question attempt using one broad `Choice` question.
-- `router_bench_results.json` is the initial 16-question run using one atomic `Noul` question.
-- `router_bench_results_50.json` is the expanded 50-question run recording both visible output tokens (`candidatesTokenCount`) and internal thinking tokens (`thoughtsTokenCount`).
+```bash
+python3 router_bench.py --from-json router_bench_results_50.json
+```
 
-## Running it yourself
+## Running live against the APIs
 
 Requires Python 3.9+, stdlib only, no pip packages.
 
