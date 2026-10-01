@@ -531,6 +531,13 @@ def main():
         "--from-json",
         help="Path to an existing results JSON file to print summary tables without making API calls.",
     )
+    parser.add_argument(
+        "--out",
+        default=os.path.join(
+            os.path.dirname(__file__), "router_bench_results_50_live.json"
+        ),
+        help="Output path for live runs (defaults to router_bench_results_50_live.json so the committed router_bench_results_50.json is preserved).",
+    )
     args = parser.parse_args()
 
     if args.from_json:
@@ -550,7 +557,8 @@ def main():
             "Set TYPESAFE_API_KEY in the environment before running live (or pass --from-json)."
         )
 
-    out_path = os.path.join(os.path.dirname(__file__), "router_bench_results_50.json")
+    out_path = args.out
+    partial_path = out_path + ".partial"
     print(
         f"Running {len(QUESTIONS)} questions (16 dev + 34 held-out test) with 6 workers...",
         file=sys.stderr,
@@ -570,7 +578,7 @@ def main():
                 for item in QUESTIONS
                 if item["id"] in results_by_id
             ]
-            with open(out_path, "w") as f:
+            with open(partial_path, "w") as f:
                 json.dump(partial, f, indent=2)
             print(
                 f"  [{len(results_by_id):2d}/{len(QUESTIONS)}] {row['id']:3s} ({row['split']:4s}/{row['bucket']:16s}) "
@@ -585,8 +593,9 @@ def main():
             )
 
     ordered = [results_by_id[q["id"]] for q in QUESTIONS]
-    with open(out_path, "w") as f:
+    with open(partial_path, "w") as f:
         json.dump(ordered, f, indent=2)
+    os.replace(partial_path, out_path)
     print(f"\nWrote {out_path}\n", file=sys.stderr)
     print_summary(ordered)
 
