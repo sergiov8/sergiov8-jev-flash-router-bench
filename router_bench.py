@@ -8,18 +8,20 @@ questions across 7 task buckets):
 
 Standalone arms:
   1. Always Flash-Lite (gemini-3.5-flash-lite, 0 thinking tokens)
-  2. Always Flash-3.8 (maxOutputTokens=300 cap, default HIGH thinking)
+  2. Always Flash-3.8 (maxOutputTokens=300 cap, default thinking)
   3. Always Flash-3.8 (thinkingConfig={"thinkingLevel": "LOW"})
-  4. Always Flash-3.8 (maxOutputTokens=4096, default HIGH thinking)
+  4. Always Flash-3.8 (maxOutputTokens=4096, default thinking)
   5. Always Pro-3.1   (gemini-3.1-pro-preview, maxOutputTokens=4096)
 
 Router arms (SIMPLE -> cheap path, COMPLEX -> deep path):
-  6. Router Heuristic (Flash-Lite -> Flash-3.8 HIGH)
-  7. Router Jev       (Flash-Lite -> Flash-3.8 HIGH)
-  8. Router Jev       (Flash-Lite -> Flash-3.8 LOW)
-  9. Router Jev       (Flash-3.8 LOW -> Flash-3.8 HIGH, single model cache)
-  10. Router Jev      (Flash-3.8 300-cap -> Flash-3.8 HIGH, output-cap control)
-  11. Router Jev      (Flash-3.8 300-cap -> Pro-3.1)
+  6. Router Heuristic (Flash-Lite -> Flash-3.8 LOW)
+  7. Router Jev       (Flash-Lite -> Flash-3.8 LOW)
+  8. Oracle Router    (true labels, free classifier: Flash-Lite -> Flash-3.8 LOW)
+  9. Router Heuristic (Flash-Lite -> Flash-3.8 4096 default)
+  10. Router Jev      (Flash-Lite -> Flash-3.8 4096 default)
+  11. Router Jev      (Flash-3.8 LOW -> Flash-3.8 4096 default)
+  12. Router Jev      (Flash-3.8 300-cap -> Flash-3.8 4096 default)
+  13. Router Jev      (Flash-3.8 300-cap -> Pro-3.1)
 
 Run offline summary from saved JSON (no API keys required):
   python3 router_bench.py --from-json router_bench_results_50.json
@@ -61,7 +63,7 @@ def call_gemini(
 ):
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:"
-        f"generateContent?key={api_key}"
+        f"generateContent"
     )
     gen_cfg: dict = {
         "temperature": 0,
@@ -76,7 +78,12 @@ def call_gemini(
     data = json.dumps(body).encode("utf-8")
     for attempt in range(retries):
         req = urllib.request.Request(
-            url, data=data, headers={"Content-Type": "application/json"}
+            url,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": api_key,
+            },
         )
         t0 = time.perf_counter()
         try:
@@ -218,6 +225,20 @@ def call_jev(question_text, api_key="", retries=4):
                 "out_tok": 0,
                 "error": raw[:200].decode("utf-8", "replace"),
             }
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(2 * (attempt + 1))
+                continue
+            latency = time.perf_counter() - t0
+            return {
+                "label": "ERROR",
+                "confidence": 0.0,
+                "probabilities": {"multi_step": 0.0},
+                "latency_s": latency,
+                "in_tok": 0,
+                "out_tok": 0,
+                "error": str(e)[:200],
+            }
     return {
         "label": "ERROR",
         "confidence": 0.0,
@@ -328,7 +349,7 @@ def evaluate_question(q, gemini_key, typesafe_key):
             flash_lite["out_tok"] + flash_lite["thought_tok"],
         ),
         "flash_lite_correct": bool(q["check"](flash_lite["text"])),
-        # Flash 300-token cap (maxOutputTokens=300, default HIGH thinking)
+        # Flash 300-token cap (maxOutputTokens=300, default thinking)
         "flash_text": flash_fast["text"][:160],
         "flash_finish_reason": flash_fast["finish_reason"],
         "flash_latency_s": flash_fast["latency_s"],
@@ -360,7 +381,7 @@ def evaluate_question(q, gemini_key, typesafe_key):
             flash_low["out_tok"] + flash_low["thought_tok"],
         ),
         "flash_low_correct": bool(q["check"](flash_low["text"])),
-        # Flash 4096-token HIGH thinking (maxOutputTokens=4096, default HIGH thinking)
+        # Flash 4096-token default thinking (maxOutputTokens=4096)
         "flash_full_text": flash_full["text"][:160],
         "flash_full_finish_reason": flash_full["finish_reason"],
         "flash_full_latency_s": flash_full["latency_s"],
@@ -412,9 +433,9 @@ def print_summary(rows):
 
     print("\n=== 2. Strategy Performance Across All 50 Tasks ===")
     print(
-        f"  {'Strategy':40s} | {'Acc':12s} | {'ThTok':6s} | {'Billed Cost':11s} | {'Cost/Success':12s} | {'AvgLat':6s}"
+        f"  {'Strategy':44s} | {'Acc':12s} | {'ThTok':6s} | {'Billed Cost':11s} | {'Cost/Success':12s} | {'AvgLat':6s}"
     )
-    print("  " + "-" * 102)
+    print("  " + "-" * 106)
 
     def show_strat(label, pick_fn, use_jev=False, use_heur=False):
         ok = billed = lat = th = 0.0
@@ -431,25 +452,20 @@ def print_summary(rows):
                 lat += r["heuristic_latency_s"]
         cps = billed / ok if ok else float("inf")
         print(
-            f"  {label:40s} | {int(ok):2d}/{n} ({100 * ok / n:5.1f}%) | "
+            f"  {label:44s} | {int(ok):2d}/{n} ({100 * ok / n:5.1f}%) | "
             f"{int(th):6d} | ${billed:10.5f} | ${cps:11.5f} | {lat / n:5.2f}s"
         )
 
     show_strat("Always Flash-Lite (3.5-flash-lite)", lambda r: "flash_lite")
-    show_strat("Always Flash-3.8 (300-tok output cap)", lambda r: "flash")
+    show_strat("Always Flash-3.8 (300-tok cap, default)", lambda r: "flash")
     show_strat("Always Flash-3.8 (thinkingLevel=LOW)", lambda r: "flash_low")
-    show_strat("Always Flash-3.8 (4096-tok HIGH)", lambda r: "flash_full")
+    show_strat("Always Flash-3.8 (4096-tok, default)", lambda r: "flash_full")
     show_strat("Always Pro-3.1 (4096-tok)", lambda r: "pro")
-    print("  " + "-" * 102)
+    print("  " + "-" * 106)
     show_strat(
-        "Router Heuristic (Flash-Lite -> 3.8 HIGH)",
-        lambda r: "flash_full" if r["heuristic_label"] == "COMPLEX" else "flash_lite",
+        "Router Heuristic (Flash-Lite -> 3.8 LOW)",
+        lambda r: "flash_low" if r["heuristic_label"] == "COMPLEX" else "flash_lite",
         use_heur=True,
-    )
-    show_strat(
-        "Router Jev (Flash-Lite -> 3.8 HIGH)",
-        lambda r: "flash_full" if r["jev_label"] == "COMPLEX" else "flash_lite",
-        use_jev=True,
     )
     show_strat(
         "Router Jev (Flash-Lite -> 3.8 LOW)",
@@ -457,12 +473,27 @@ def print_summary(rows):
         use_jev=True,
     )
     show_strat(
-        "Router Jev (3.8 LOW -> 3.8 HIGH)",
+        "Oracle (true labels, free: Lite -> 3.8 LOW)",
+        lambda r: "flash_low" if r["true_label"] == "COMPLEX" else "flash_lite",
+    )
+    print("  " + "-" * 106)
+    show_strat(
+        "Router Heuristic (Flash-Lite -> 3.8 default)",
+        lambda r: "flash_full" if r["heuristic_label"] == "COMPLEX" else "flash_lite",
+        use_heur=True,
+    )
+    show_strat(
+        "Router Jev (Flash-Lite -> 3.8 default)",
+        lambda r: "flash_full" if r["jev_label"] == "COMPLEX" else "flash_lite",
+        use_jev=True,
+    )
+    show_strat(
+        "Router Jev (3.8 LOW -> 3.8 default)",
         lambda r: "flash_full" if r["jev_label"] == "COMPLEX" else "flash_low",
         use_jev=True,
     )
     show_strat(
-        "Router Jev (3.8 300-cap -> 3.8 HIGH)",
+        "Router Jev (3.8 300-cap -> 3.8 default)",
         lambda r: "flash_full" if r["jev_label"] == "COMPLEX" else "flash",
         use_jev=True,
     )
@@ -472,20 +503,23 @@ def print_summary(rows):
         use_jev=True,
     )
 
-    print("\n=== 3. Easy-Task Thinking Tokens on the 27 Jev-SIMPLE Questions ===")
     jev_simple = [r for r in rows if r["jev_label"] == "SIMPLE"]
+    js_count = len(jev_simple)
+    print(
+        f"\n=== 3. Easy-Task Thinking Tokens on the {js_count} Jev-SIMPLE Questions ==="
+    )
     for label, prefix in [
         ("Flash-Lite (3.5-flash-lite)", "flash_lite"),
         ("Flash-3.8 (thinkingLevel=LOW)", "flash_low"),
-        ("Flash-3.8 (300-tok cap, default HIGH)", "flash"),
-        ("Flash-3.8 (4096-tok cap, default HIGH)", "flash_full"),
+        ("Flash-3.8 (300-tok cap, default)", "flash"),
+        ("Flash-3.8 (4096-tok cap, default)", "flash_full"),
     ]:
-        avg_th = sum(r[f"{prefix}_thought_tok"] for r in jev_simple) / len(jev_simple)
+        avg_th = sum(r[f"{prefix}_thought_tok"] for r in jev_simple) / js_count
         tot_bill = sum(r[f"{prefix}_billed_cost_usd"] for r in jev_simple)
-        avg_lat = sum(r[f"{prefix}_latency_s"] for r in jev_simple) / len(jev_simple)
+        avg_lat = sum(r[f"{prefix}_latency_s"] for r in jev_simple) / js_count
         print(
             f"  {label:38s} | Avg ThTok: {avg_th:5.1f} | "
-            f"27-Task Billed Cost: ${tot_bill:.5f} | AvgLat: {avg_lat:.2f}s"
+            f"{js_count}-Task Billed Cost: ${tot_bill:.5f} | AvgLat: {avg_lat:.2f}s"
         )
 
 
@@ -531,6 +565,13 @@ def main():
             q = future_to_q[fut]
             row = fut.result()
             results_by_id[q["id"]] = row
+            partial = [
+                results_by_id[item["id"]]
+                for item in QUESTIONS
+                if item["id"] in results_by_id
+            ]
+            with open(out_path, "w") as f:
+                json.dump(partial, f, indent=2)
             print(
                 f"  [{len(results_by_id):2d}/{len(QUESTIONS)}] {row['id']:3s} ({row['split']:4s}/{row['bucket']:16s}) "
                 f"jev={row['jev_label']:7s}({row['jev_confidence']:.2f}) "
